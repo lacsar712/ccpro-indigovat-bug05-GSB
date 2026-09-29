@@ -9,8 +9,8 @@ from fastapi.templating import Jinja2Templates
 from jinja2.utils import markupsafe
 from sqlalchemy.orm import Session, joinedload
 
-from app.auth import get_current_user, logout_user
-from app.services.write_acl import can_write_lot, can_write_profile, can_write_status
+from app.auth import get_current_user
+from app.services import write_acl
 from app.db import get_db
 from app.models import DipLot, Vat, Workshop
 from app.services.vat_rules import VatRuleError, validate_vat_status_change
@@ -149,11 +149,19 @@ async def bay_vat_status(
     ws = int(workshop) if workshop.strip() else None
     if not item:
         return RedirectResponse("/", status_code=303)
+    if not write_acl.can_write_status(user):
+        # 仅拒绝本次写入；会话保持，仍渲染还原台供浏览
+        return render(
+            request,
+            "bay.html",
+            _bay_context(
+                request, db, user, ws, pk,
+                write_acl.DENIED_MESSAGES[write_acl.STATUS],
+            ),
+            status_code=403,
+        )
     error = None
     try:
-        if not can_write_status(user):
-            logout_user(request)
-            raise VatRuleError("无权限改状态")
         latest = item.latest_lot()
         validate_vat_status_change(item, status, latest)
         item.status = status
@@ -187,11 +195,19 @@ async def bay_log_lot(
     ws = int(workshop) if workshop.strip() else None
     if not item:
         return RedirectResponse("/", status_code=303)
+    if not write_acl.can_write_lot(user):
+        # 仅拒绝本次写入；会话保持，仍渲染还原台供浏览
+        return render(
+            request,
+            "bay.html",
+            _bay_context(
+                request, db, user, ws, pk,
+                write_acl.DENIED_MESSAGES[write_acl.LOT],
+            ),
+            status_code=403,
+        )
     error = None
     try:
-        if not can_write_lot(user):
-            logout_user(request)
-            raise ValueError("无权限登记浸染")
         lot = DipLot(
             vat_id=pk,
             dippedAt=datetime.fromisoformat(dippedAt),
@@ -212,7 +228,6 @@ async def bay_log_lot(
     )
 
 
-
 @router.post("/bay/vats/{pk}/profile", response_class=HTMLResponse)
 async def bay_vat_profile(
     pk: int,
@@ -229,11 +244,19 @@ async def bay_vat_profile(
     ws = int(workshop) if workshop.strip() else None
     if not item:
         return RedirectResponse("/", status_code=303)
+    if not write_acl.can_write_profile(user):
+        # 仅拒绝本次写入；会话保持，仍渲染还原台供浏览
+        return render(
+            request,
+            "bay.html",
+            _bay_context(
+                request, db, user, ws, pk,
+                write_acl.DENIED_MESSAGES[write_acl.PROFILE],
+            ),
+            status_code=403,
+        )
     error = None
     try:
-        if not can_write_profile(user):
-            request.session.clear()
-            raise ValueError("无权限改缸资料")
         item.volumeL = Decimal(volumeL)
         item.dyeType = dyeType.strip() or item.dyeType
         db.commit()
@@ -244,7 +267,7 @@ async def bay_vat_profile(
     return render(
         request,
         "bay.html",
-        _bay_context(request, db, get_current_user(request, db), ws, pk, error),
+        _bay_context(request, db, user, ws, pk, error),
         status_code=400,
     )
 
