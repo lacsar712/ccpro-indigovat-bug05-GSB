@@ -9,8 +9,14 @@ from fastapi.templating import Jinja2Templates
 from jinja2.utils import markupsafe
 from sqlalchemy.orm import Session, joinedload
 
-from app.auth import get_current_user, logout_user
-from app.services.write_acl import can_write_lot, can_write_profile, can_write_status
+from app.auth import get_current_user
+from app.services.write_acl import (
+    WriteDeniedError,
+    require_write,
+    WRITE_LOT,
+    WRITE_PROFILE,
+    WRITE_STATUS,
+)
 from app.db import get_db
 from app.models import DipLot, Vat, Workshop
 from app.services.vat_rules import VatRuleError, validate_vat_status_change
@@ -151,16 +157,14 @@ async def bay_vat_status(
         return RedirectResponse("/", status_code=303)
     error = None
     try:
-        if not can_write_status(user):
-            logout_user(request)
-            raise VatRuleError("无权限改状态")
+        require_write(user, WRITE_STATUS)
         latest = item.latest_lot()
         validate_vat_status_change(item, status, latest)
         item.status = status
         db.commit()
         return RedirectResponse(f"/?vat={pk}" + (f"&workshop={ws}" if ws else ""), status_code=303)
-    except VatRuleError as exc:
-        error = exc.message
+    except (WriteDeniedError, VatRuleError) as exc:
+        error = exc.message if isinstance(exc, VatRuleError) else str(exc)
         db.rollback()
     return render(
         request,
@@ -189,9 +193,7 @@ async def bay_log_lot(
         return RedirectResponse("/", status_code=303)
     error = None
     try:
-        if not can_write_lot(user):
-            logout_user(request)
-            raise ValueError("无权限登记浸染")
+        require_write(user, WRITE_LOT)
         lot = DipLot(
             vat_id=pk,
             dippedAt=datetime.fromisoformat(dippedAt),
@@ -201,6 +203,9 @@ async def bay_log_lot(
         db.add(lot)
         db.commit()
         return RedirectResponse(f"/?vat={pk}" + (f"&workshop={ws}" if ws else ""), status_code=303)
+    except WriteDeniedError as exc:
+        error = str(exc)
+        db.rollback()
     except (ValueError, InvalidOperation) as exc:
         error = f"浸染记录无效：{exc}"
         db.rollback()
@@ -231,20 +236,21 @@ async def bay_vat_profile(
         return RedirectResponse("/", status_code=303)
     error = None
     try:
-        if not can_write_profile(user):
-            request.session.clear()
-            raise ValueError("无权限改缸资料")
+        require_write(user, WRITE_PROFILE)
         item.volumeL = Decimal(volumeL)
         item.dyeType = dyeType.strip() or item.dyeType
         db.commit()
         return RedirectResponse(f"/?vat={pk}" + (f"&workshop={ws}" if ws else ""), status_code=303)
+    except WriteDeniedError as exc:
+        error = str(exc)
+        db.rollback()
     except (ValueError, InvalidOperation) as exc:
         error = str(exc)
         db.rollback()
     return render(
         request,
         "bay.html",
-        _bay_context(request, db, get_current_user(request, db), ws, pk, error),
+        _bay_context(request, db, user, ws, pk, error),
         status_code=400,
     )
 
